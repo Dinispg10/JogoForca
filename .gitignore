@@ -1,0 +1,10 @@
+# Ignorar arquivos de configuração do Eclipse
+.class
+.project
+.settings/
+
+# Ignorar diretórios de build
+/bin/
+
+# Ignorar arquivos de log
+*.log
