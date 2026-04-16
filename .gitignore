@@ -1,5 +1,5 @@
 # Ignorar arquivos de configuração do Eclipse
-.class
+*.class
 .project
 .settings/
 
