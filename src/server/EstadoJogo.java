@@ -8,27 +8,34 @@ public class EstadoJogo {
     private final Set<Character> letrasUsadas;
     private final List<Integer> vencedores;
 
-    private int tentativasRestantes;
+    private final Map<Integer, Integer> tentativasPorJogador;
+    private final int maxTentativas;
+    
     private boolean finalizado;
 
     public EstadoJogo(String palavra, int maxTentativas) {
         this.palavra = palavra.toUpperCase();
-        this.tentativasRestantes = maxTentativas;
+        this.maxTentativas = maxTentativas;
+        this.tentativasPorJogador = new HashMap<>();
         this.letrasUsadas = new HashSet<>();
         this.vencedores = new ArrayList<>();
         this.finalizado = false;
     }
 
-    public synchronized boolean processarChute(String chute, int idJogador) {
-        if (finalizado || chute == null || chute.isBlank()) {
+    public synchronized void adicionarJogador(int idJogador) {
+        tentativasPorJogador.put(idJogador, maxTentativas);
+    }
+
+    public synchronized boolean processarJogada(String jogada, int idJogador) {
+        if (finalizado || jogada == null || jogada.isBlank()) {
             return false;
         }
 
-        chute = chute.trim().toUpperCase();
+        jogada = jogada.trim().toUpperCase();
         boolean correto = false;
 
-        if (chute.length() == 1) {
-            char letra = chute.charAt(0);
+        if (jogada.length() == 1) {
+            char letra = jogada.charAt(0);
 
             if (!Character.isLetter(letra)) {
                 return false;
@@ -46,25 +53,17 @@ public class EstadoJogo {
                             vencedores.add(idJogador);
                         }
                     }
-                } else {
-                    tentativasRestantes--;
                 }
             }
         } else {
-            if (chute.equals(palavra)) {
+            if (jogada.equals(palavra)) {
                 correto = true;
                 finalizado = true;
 
                 if (!vencedores.contains(idJogador)) {
                     vencedores.add(idJogador);
                 }
-            } else {
-                tentativasRestantes--;
             }
-        }
-
-        if (tentativasRestantes <= 0) {
-            finalizado = true;
         }
 
         return correto;
@@ -93,8 +92,8 @@ public class EstadoJogo {
         return sb.toString().trim();
     }
 
-    public synchronized int getTentativasRestantes() {
-        return tentativasRestantes;
+    public synchronized int getTentativasRestantes(int idJogador) {
+        return tentativasPorJogador.getOrDefault(idJogador, 0);
     }
 
     public synchronized String getLetrasUsadasStr() {
@@ -118,6 +117,26 @@ public class EstadoJogo {
 
     public synchronized void setFinalizado(boolean finalizado) {
         this.finalizado = finalizado;
+    }
+
+    public synchronized void consumirTentativa(int idJogador) {
+        if (finalizado) return;
+        
+        int t = tentativasPorJogador.getOrDefault(idJogador, 0);
+        if (t > 0) {
+            tentativasPorJogador.put(idJogador, t - 1);
+            
+            if (t - 1 <= 0) {
+                finalizado = true;
+                
+                // Conforme pedido: se alguém chega a 0, o jogo acaba e ganham os outros!
+                for (Map.Entry<Integer, Integer> entry : tentativasPorJogador.entrySet()) {
+                    if (entry.getValue() > 0 && !vencedores.contains(entry.getKey())) {
+                        vencedores.add(entry.getKey());
+                    }
+                }
+            }
+        }
     }
 
     public synchronized List<Integer> getVencedores() {
