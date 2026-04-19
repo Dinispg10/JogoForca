@@ -151,7 +151,8 @@ public class EstadoJogo {
     public synchronized void eliminarJogador(int idJogador) {
         if (finalizado) return;
         tentativasPorJogador.put(idJogador, 0);
-        verificarFimDeJogo();
+        // Não chamamos verificarFimDeJogo aqui porque o GestorDeJogo
+        // vai decidir se o jogo continua com base nos jogadores ligados.
     }
 
     public synchronized void consumirTentativa(int idJogador) {
@@ -167,30 +168,24 @@ public class EstadoJogo {
     public synchronized void verificarFimDeJogo() {
         if (finalizado) return;
 
-        // Se alguém adivinhou a palavra, já está na lista de vencedores (pelo processarJogadasDaRonda)
+        // Se alguém adivinhou a palavra, já está na lista de vencedores
         if (!vencedores.isEmpty()) {
             finalizado = true;
             return;
         }
 
-        // Caso contrário, verificar se alguém ficou sem tentativas
-        boolean alguemMorreu = false;
+        // Verificar se TODOS ficaram sem tentativas
+        boolean todosMortos = true;
         for (int t : tentativasPorJogador.values()) {
-            if (t <= 0) {
-                alguemMorreu = true;
+            if (t > 0) {
+                todosMortos = false;
                 break;
             }
         }
 
-        if (alguemMorreu) {
+        if (todosMortos) {
             finalizado = true;
-            // Ganham os que ainda têm tentativas
-            for (Map.Entry<Integer, Integer> entry : tentativasPorJogador.entrySet()) {
-                if (entry.getValue() > 0) {
-                    vencedores.add(entry.getKey());
-                }
-            }
-            // Se TODOS morreram, a lista de vencedores ficará vazia -> Derrota Total.
+            // Neste caso (derrota total), vencedores continua vazio.
         }
     }
 

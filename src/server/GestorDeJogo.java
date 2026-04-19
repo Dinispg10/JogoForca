@@ -113,9 +113,15 @@ public class GestorDeJogo implements Runnable {
         Map<Integer, String> jogadas = new HashMap<>();
         for (GestorCliente jogador : jogadores) {
             if (jogador.isConectado()) {
-                String jogada = jogador.obterELimparJogada();
-                System.out.println("[GestorDeJogo] J" + jogador.getIdJogador() + " jogou: " + (jogada == null || jogada.isBlank() ? "nada (Timeout)" : jogada));
-                jogadas.put(jogador.getIdJogador(), jogada);
+                // Só processa jogada se o jogador ainda tiver tentativas
+                if (estado.getTentativasRestantes(jogador.getIdJogador()) > 0) {
+                    String jogada = jogador.obterELimparJogada();
+                    System.out.println("[GestorDeJogo] J" + jogador.getIdJogador() + " jogou: " + (jogada == null || jogada.isBlank() ? "nada (Timeout)" : jogada));
+                    jogadas.put(jogador.getIdJogador(), jogada);
+                } else {
+                    // Limpa jogada de quem está morto para não acumular
+                    jogador.obterELimparJogada();
+                }
             }
         }
 
@@ -148,8 +154,24 @@ public class GestorDeJogo implements Runnable {
             broadcast(ProtocolMessages.fimVitoria(idsVencedores, estado.getPalavra()));
             System.out.println("[GestorDeJogo] Vencedores: " + idsVencedores);
         } else {
-            broadcast(ProtocolMessages.fimPerda(estado.getPalavra()));
-            System.out.println("[GestorDeJogo] Derrota total. A palavra era: " + estado.getPalavra());
+            // Se o jogo acabou por abandono e resta alguém, eles vencem
+            List<Integer> sobreviventes = new ArrayList<>();
+            for (GestorCliente h : jogadores) {
+                if (h.isConectado() && estado.getTentativasRestantes(h.getIdJogador()) > 0) {
+                    sobreviventes.add(h.getIdJogador());
+                }
+            }
+
+            if (!sobreviventes.isEmpty()) {
+                String idsVencedores = sobreviventes.stream()
+                        .map(String::valueOf)
+                        .collect(Collectors.joining(","));
+                broadcast(ProtocolMessages.fimVitoria(idsVencedores, estado.getPalavra()));
+                System.out.println("[GestorDeJogo] Vencedores por abandono: " + idsVencedores);
+            } else {
+                broadcast(ProtocolMessages.fimPerda(estado.getPalavra()));
+                System.out.println("[GestorDeJogo] Derrota total. A palavra era: " + estado.getPalavra());
+            }
         }
 
         dormir(500);
@@ -165,12 +187,27 @@ public class GestorDeJogo implements Runnable {
         if (removido) {
             System.out.println("[GestorDeJogo] J" + idJogador + " desligou-se. Ativos: " + jogadoresAtivos.size());
             
-            // Requisito novo: se um jogador se desconecta a meio, ele perde
-            // e o jogo acaba dando vitória aos outros.
             if (jogoARodar && !estado.isFinalizado()) {
-                System.out.println("[GestorDeJogo] J" + idJogador + " abandonou o jogo! A terminar sessão.");
+                // Marcar como derrotado (0 tentativas) por abandono
                 estado.eliminarJogador(idJogador);
-                jogoARodar = false;
+
+                // Se restarem menos de 2 jogadores, o jogo termina por abandono
+                if (jogadoresAtivos.size() < 2) {
+                    System.out.println("[GestorDeJogo] Menos de 2 jogadores restantes. A terminar sessão por abandono.");
+                    
+                    // Se restar 1, ele ganha por abandono (se ainda tiver tentativas)
+                    if (jogadoresAtivos.size() == 1) {
+                        int ultimoId = jogadoresAtivos.iterator().next();
+                        if (estado.getTentativasRestantes(ultimoId) > 0) {
+                            // O EstadoJogo vai reportar este como vencedor no finalizarJogo()
+                            // se não houver outros vencedores (adivinhação).
+                        }
+                    }
+                    
+                    jogoARodar = false;
+                } else {
+                    System.out.println("[GestorDeJogo] O jogo continua com " + jogadoresAtivos.size() + " jogadores.");
+                }
             }
         }
 

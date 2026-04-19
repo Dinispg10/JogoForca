@@ -50,8 +50,8 @@ public class ServidorJogo {
             // Latch 1: dispara quando o 1.º jogador liga → inicia o timer do lobby
             CountDownLatch primeiroJogadorLatch = new CountDownLatch(1);
 
-            // Latch 2: dispara quando MIN_JOGADORES estão ligados
-            CountDownLatch minJogadoresLatch = new CountDownLatch(MIN_JOGADORES);
+            // Latch 2: dispara quando MAX_JOGADORES estão ligados (ou timeout 20s)
+            CountDownLatch lobbyLatch = new CountDownLatch(MAX_JOGADORES);
 
             Thread starterThread = new Thread(() -> {
                 try {
@@ -60,11 +60,11 @@ public class ServidorJogo {
                     System.out.println("[Servidor] 1.º jogador ligado! Lobby aberto por "
                             + (LOBBY_TIMEOUT_MS / 1000) + "s...");
 
-                    // Fase 2: aguardar MIN_JOGADORES com timeout de LOBBY_TIMEOUT_MS
-                    boolean chegaram = minJogadoresLatch.await(LOBBY_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                    // Fase 2: aguardar MAX_JOGADORES com timeout de LOBBY_TIMEOUT_MS
+                    boolean salaCheia = lobbyLatch.await(LOBBY_TIMEOUT_MS, TimeUnit.MILLISECONDS);
 
                     System.out.println("[Servidor] "
-                            + (chegaram ? "Mínimo de jogadores atingido." : "Tempo de lobby esgotado.")
+                            + (salaCheia ? "Sala cheia (4 jogadores)." : "Tempo de lobby esgotado.")
                             + " Total: " + handlers.size() + " jogador(es).");
 
                     if (handlers.size() < MIN_JOGADORES) {
@@ -81,9 +81,19 @@ public class ServidorJogo {
 
                     jogoIniciado.set(true);
 
-                    List<GestorCliente> jogadoresDoJogo;
+                    List<GestorCliente> jogadoresDoJogo = new ArrayList<>();
                     synchronized (handlers) {
-                        jogadoresDoJogo = new ArrayList<>(handlers);
+                        for (GestorCliente h : handlers) {
+                            if (h.isConectado()) {
+                                jogadoresDoJogo.add(h);
+                            }
+                        }
+                    }
+
+                    if (jogadoresDoJogo.size() < MIN_JOGADORES) {
+                        System.out.println("[Servidor] Jogadores ativos insuficientes (" + jogadoresDoJogo.size() + "). A encerrar.");
+                        serverSocket.close();
+                        return;
                     }
 
                     System.out.println("[Servidor] A iniciar jogo com " + jogadoresDoJogo.size() + " jogadores.");
@@ -128,8 +138,8 @@ public class ServidorJogo {
                 }
 
                 int idJogador = handlers.size() + 1;
-                // Passa minJogadoresLatch: cada cliente faz countDown() ao ligar
-                GestorCliente handler = new GestorCliente(clientSocket, idJogador, minJogadoresLatch);
+                // Passa lobbyLatch: cada cliente faz countDown() ao ligar
+                GestorCliente handler = new GestorCliente(clientSocket, idJogador, lobbyLatch);
                 handlers.add(handler);
 
                 // Quando o 1.º jogador liga, dispara o timer do lobby
