@@ -16,13 +16,18 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Servidor principal do Jogo da Forca.
+ * Ponto de entrada do servidor para o Jogo da Forca Multijogador.
+ * Gere o ciclo de vida do servidor, incluindo a aceitação de ligações, 
+ * gestão do lobby de espera e lançamento da sessão de jogo.
  *
- * Fluxo de arranque:
- *  1. Aguarda indefinidamente pelo 1.º jogador (primeiroJogadorLatch)
- *  2. Quando o 1.º jogador liga, abre o lobby por LOBBY_TIMEOUT_MS (20s)
- *  3. Se ao fim do lobby houver >= MIN_JOGADORES → inicia o jogo
- *     Caso contrário → encerra o servidor
+ * <p>Arquitetura de Arranque:
+ * <ol>
+ *  <li>Aguarda indefinidamente pela ligação do primeiro jogador.</li>
+ *  <li>Após a primeira ligação, inicia uma contagem decrescente (lobby) de 20 segundos.</li>
+ *  <li>Se o quórum mínimo for atingido dentro do tempo, o jogo inicia.</li>
+ *  <li>Caso contrário, o servidor encerra por falta de jogadores.</li>
+ * </ol>
+ * </p>
  */
 public class ServidorJogo {
 
@@ -30,7 +35,7 @@ public class ServidorJogo {
     private static final int MAX_JOGADORES = 4;
     private static final int MIN_JOGADORES = 2;
 
-    /** Tempo de espera do lobby APÓS o 1.º jogador ligar (enunciado: ~20s) */
+    /** Tempo de espera do lobby após a ligação do primeiro jogador (em milissegundos). */
     private static final long LOBBY_TIMEOUT_MS = 20_000;
 
     public static void main(String[] args) {
@@ -40,27 +45,25 @@ public class ServidorJogo {
             System.out.println("Mín. jogadores: " + MIN_JOGADORES + " | Máx.: " + MAX_JOGADORES);
             System.out.println("Lobby abre " + (LOBBY_TIMEOUT_MS / 1000) + "s após o 1.º jogador ligar");
             System.out.println("================================");
-            System.out.println("[Servidor] À espera do 1.º jogador...");
 
-            List<GestorCliente> handlers =
-                    Collections.synchronizedList(new ArrayList<>());
-
+            List<GestorCliente> handlers = Collections.synchronizedList(new ArrayList<>());
             AtomicBoolean jogoIniciado = new AtomicBoolean(false);
 
-            // Latch 1: dispara quando o 1.º jogador liga → inicia o timer do lobby
+            // Sincronização: Aguarda o primeiro jogador para disparar o timer do lobby
             CountDownLatch primeiroJogadorLatch = new CountDownLatch(1);
 
-            // Latch 2: dispara quando MAX_JOGADORES estão ligados (ou timeout 20s)
+            // Sincronização: Monitoriza o preenchimento da sala ou o timeout do lobby
             CountDownLatch lobbyLatch = new CountDownLatch(MAX_JOGADORES);
 
+            // Thread de controlo do arranque da sessão
             Thread starterThread = new Thread(() -> {
                 try {
-                    // Fase 1: aguardar o 1.º jogador (sem timeout)
+                    // Fase 1: Bloqueia até que pelo menos um jogador se ligue
                     primeiroJogadorLatch.await();
                     System.out.println("[Servidor] 1.º jogador ligado! Lobby aberto por "
                             + (LOBBY_TIMEOUT_MS / 1000) + "s...");
 
-                    // Fase 2: aguardar MAX_JOGADORES com timeout de LOBBY_TIMEOUT_MS
+                    // Fase 2: Aguarda até a sala encher ou o tempo esgotar
                     boolean salaCheia = lobbyLatch.await(LOBBY_TIMEOUT_MS, TimeUnit.MILLISECONDS);
 
                     System.out.println("[Servidor] "
@@ -69,12 +72,10 @@ public class ServidorJogo {
 
                     if (handlers.size() < MIN_JOGADORES) {
                         System.out.println("[Servidor] Jogadores insuficientes. A encerrar servidor.");
-                        // Notificar todos os clientes que o lobby timeout foi atingido
                         for (GestorCliente handler : handlers) {
                             handler.enviarMensagem(ProtocolMessages.lobbyTimeout());
                         }
-                        // Dar tempo aos clientes de receberem a mensagem antes de encerrar
-                        Thread.sleep(500);
+                        Thread.sleep(500); // Margem para propagação da mensagem
                         serverSocket.close();
                         return;
                     }
@@ -98,24 +99,26 @@ public class ServidorJogo {
 
                     System.out.println("[Servidor] A iniciar jogo com " + jogadoresDoJogo.size() + " jogadores.");
 
-                    GestorDeJogo gerenciador = new GestorDeJogo(jogadoresDoJogo);
-                    Thread gameThread = new Thread(gerenciador, "GestorDeJogo");
+                    // Delega a gestão da partida para o GestorDeJogo
+                    GestorDeJogo gestor = new GestorDeJogo(jogadoresDoJogo);
+                    Thread gameThread = new Thread(gestor, "GestorDeJogo");
                     gameThread.start();
-                    gameThread.join();
+                    gameThread.join(); // Aguarda o fim da partida
 
                     System.out.println("[Servidor] Sessão de jogo concluída.");
                     serverSocket.close();
 
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
-                    System.out.println("[Servidor] Thread de arranque interrompida.");
+                    System.err.println("[Servidor] Erro crítico na thread de arranque.");
                 } catch (IOException e) {
-                    System.out.println("[Servidor] Erro: " + e.getMessage());
+                    System.err.println("[Servidor] Erro de rede: " + e.getMessage());
                 }
             }, "StarterThread");
 
             starterThread.start();
 
+            // Loop principal de aceitação de sockets
             while (!serverSocket.isClosed()) {
                 Socket clientSocket;
                 try {
@@ -124,6 +127,7 @@ public class ServidorJogo {
                     break;
                 }
 
+                // Rejeita novas ligações se o jogo já começou ou a sala está cheia
                 if (jogoIniciado.get() || handlers.size() >= MAX_JOGADORES) {
                     System.out.println("[Servidor] Ligação recusada (jogo em curso ou sala cheia): "
                             + clientSocket.getInetAddress());
@@ -132,17 +136,15 @@ public class ServidorJogo {
                                 new OutputStreamWriter(clientSocket.getOutputStream(), StandardCharsets.UTF_8), true);
                         pw.println(ProtocolMessages.CHEIO);
                         clientSocket.close();
-                    } catch (IOException ignored) {
-                    }
+                    } catch (IOException ignored) {}
                     continue;
                 }
 
                 int idJogador = handlers.size() + 1;
-                // Passa lobbyLatch: cada cliente faz countDown() ao ligar
                 GestorCliente handler = new GestorCliente(clientSocket, idJogador, lobbyLatch);
                 handlers.add(handler);
 
-                // Quando o 1.º jogador liga, dispara o timer do lobby
+                // Dispara o timer do lobby se for o primeiro jogador
                 if (handlers.size() == 1) {
                     primeiroJogadorLatch.countDown();
                 }
@@ -156,7 +158,7 @@ public class ServidorJogo {
             System.out.println("[Servidor] Servidor encerrado.");
 
         } catch (IOException e) {
-            System.err.println("[Servidor] Não foi possível iniciar o servidor: " + e.getMessage());
+            System.err.println("[Servidor] Falha ao iniciar na porta " + PORTA + ": " + e.getMessage());
         }
     }
 }

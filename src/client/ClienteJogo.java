@@ -7,13 +7,21 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashSet;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
- * Cliente do Jogo da Forca.
- *
- * Arquitetura:
- *  - Thread principal: lê input do utilizador e envia jogadas
- *  - Thread recetora: lê mensagens do servidor e mostra no terminal
+ * Interface de utilizador e motor de comunicação para o Cliente do Jogo da Forca.
+ * 
+ * <p>Arquitetura Multi-Threaded:
+ * <ul>
+ *  <li><b>Thread Principal (main):</b> Gere a leitura do input do utilizador (stdin) e o envio de jogadas.</li>
+ *  <li><b>Thread Recetora (Recetor):</b> Monitoriza o socket para mensagens do servidor em tempo real.</li>
+ *  <li><b>Thread de Interface (TimerInterface):</b> Atualiza dinamicamente o countdown visual no terminal.</li>
+ * </ul>
+ * </p>
+ * 
+ * <p>Suporta sequências de escape ANSI para controlo do cursor e atualização dinâmica 
+ * da consola sem flickering.</p>
  */
 public class ClienteJogo {
 
@@ -30,10 +38,10 @@ public class ClienteJogo {
     private static final Object LOCK_CONSOLA = new Object();
     private static volatile boolean promptVisivel = false;
 
-    // Guarda apenas as letras usadas por ESTE cliente
+    /** Letras submetidas especificamente por este cliente. */
     private static final Set<Character> letrasUsadasProprias = new LinkedHashSet<>();
 
-    // Informação visual da ronda
+    // Estado visual da ronda
     private static volatile int rondaAtual = 0;
     private static volatile long tempoRondaSegundos = 15;
     private static volatile long inicioRonda = 0;
@@ -41,13 +49,16 @@ public class ClienteJogo {
     private static volatile int tentativasAtual = 0;
     private static volatile boolean atualizarDisplay = false;
 
-    // FIX BUG 8: maxTentativas guardado do INICIO para calcular erros e barra corretamente
+    /** Limite de tentativas configurado para a sessão atual. */
     private static volatile int maxTentativas = 10;
 
-    // FIX BUG 9: letras usadas por TODOS os jogadores (recebidas do servidor)
+    /** Histórico global de letras utilizadas por todos os jogadores na sessão. */
     private static volatile String letrasUsadasGlobais = "-";
 
-
+    /**
+     * Ponto de entrada do cliente.
+     * @param args Opcionalmente: [host] [porta]
+     */
     public static void main(String[] args) throws IOException {
         String host = args.length > 0 ? args[0] : HOST;
         int porta = args.length > 1 ? Integer.parseInt(args[1]) : PORTA;
@@ -72,11 +83,12 @@ public class ClienteJogo {
             System.out.println();
         }
 
-        // FIX BUG 6: UTF-8 explícito para evitar problemas de codificação entre plataformas
+        // Utilização explícita de UTF-8 para garantir consistência de caracteres especiais entre SOs.
         PrintWriter saida = new PrintWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8), true);
         BufferedReader entrada = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
         BufferedReader stdin = new BufferedReader(new InputStreamReader(System.in));
 
+        // Thread dedicada à receção de dados do servidor
         Thread recetor = new Thread(() -> {
             try {
                 String linha;
@@ -100,36 +112,14 @@ public class ClienteJogo {
                     }
                 }
             } finally {
-                jogoFinalizado = true;
-                podeJogar = false;
-                atualizarDisplay = false;
-
-                // Fechar socket para interromper o stdin.readLine() se possível
-                try {
-                    socket.close();
-                } catch (IOException ignored) {
-                }
-                
-                // Aguardar tempo suficiente para a box de vitória/derrota ser totalmente impressa
-                try {
-                    Thread.sleep(1500);
-                } catch (InterruptedException ignored) {
-                }
-
-                // Dar tempo para o flush chegar ao terminal antes de matar o processo
-                try {
-                    Thread.sleep(1000);
-                } catch (InterruptedException ignored) {
-                }
-                
-                // Forçar saída para garantir que o programa termina, mesmo com o main bloqueado em readLine
-                System.exit(0);
+                finalizarSessaoLocal(socket);
             }
         }, "Recetor");
 
         recetor.setDaemon(true);
         recetor.start();
 
+        // Thread dedicada à atualização visual do timer no terminal via sequências ANSI
         Thread timerInterface = new Thread(() -> {
             while (!jogoFinalizado) {
                 try { Thread.sleep(1000); } catch (InterruptedException e) { break; }
@@ -141,11 +131,11 @@ public class ClienteJogo {
                     
                     synchronized (LOCK_CONSOLA) {
                         if (promptVisivel && !jogoFinalizado && podeJogar) {
-                            System.out.print("\033[s"); // Save cursor
-                            System.out.print("\033[10A"); // Move up 10 lines
-                            System.out.print("\r\033[2K"); // Carriage return & clear line
+                            System.out.print("\033[s"); // Guarda posição do cursor
+                            System.out.print("\033[10A"); // Sobe 10 linhas para o campo do timer
+                            System.out.print("\r\033[2K"); // Limpa a linha atual
                             System.out.print("| Tempo:        " + desenharTimer(restantes));
-                            System.out.print("\033[u"); // Restore cursor
+                            System.out.print("\033[u"); // Restaura cursor para o campo de input
                             System.out.flush();
                         }
                     }
@@ -155,14 +145,10 @@ public class ClienteJogo {
         timerInterface.setDaemon(true);
         timerInterface.start();
 
+        // Loop principal de leitura de input
         while (!jogoFinalizado) {
             if (!jogoIniciado || !podeJogar) {
-                try {
-                    Thread.sleep(100);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
+                dormir(100);
                 continue;
             }
 
@@ -178,25 +164,20 @@ public class ClienteJogo {
                 break;
             }
 
-            if (jogada == null) {
-                break;
-            }
+            if (jogada == null) break;
 
             jogada = jogada.trim().toUpperCase();
+            if (jogada.isEmpty()) continue;
 
-            if (jogada.isEmpty()) {
-                continue;
-            }
-
+            // Validação de input: apenas caracteres alfabéticos são permitidos
             if (!jogada.matches("\\p{L}+")) {
                 synchronized (LOCK_CONSOLA) {
-                    System.out.println("[!] Só são aceites letras (sem espaços, números ou símbolos).");
+                    System.out.println("[!] Input inválido: utilize apenas letras.");
                 }
                 continue;
             }
 
             saida.println(ProtocolMessages.jogada(jogada));
-
             registarJogadaPropria(jogada);
 
             synchronized (LOCK_CONSOLA) {
@@ -205,14 +186,29 @@ public class ClienteJogo {
 
             podeJogar = false;
         }
-
-        // Nota: A thread recetor chama System.exit(0) quando o jogo termina,
-        // portanto este código não é executado. Mantém-se para clareza.
     }
 
+    /**
+     * Encerra os recursos locais do cliente e termina o processo.
+     */
+    private static void finalizarSessaoLocal(Socket socket) {
+        jogoFinalizado = true;
+        podeJogar = false;
+        atualizarDisplay = false;
+
+        try {
+            socket.close();
+        } catch (IOException ignored) {}
+        
+        // Pausa para visualização das mensagens finais antes do encerramento do processo
+        dormir(2500);
+        System.exit(0);
+    }
+
+    /**
+     * Apresenta o prompt de input ao utilizador de forma sincronizada.
+     */
     private static void mostrarPrompt() {
-        // FIX BUG 2: loop interno redundante removido — podeJogar já é true quando esta
-        // função é chamada (o loop principal em main() garante isso)
         synchronized (LOCK_CONSOLA) {
             if (!promptVisivel) {
                 System.out.print("==========\nA sua jogada (letra ou palavra): ");
@@ -222,10 +218,12 @@ public class ClienteJogo {
         }
     }
 
+    /**
+     * Processa a lógica de receção de mensagens do servidor e atualiza a UI.
+     * @param linha Mensagem bruta recebida do socket.
+     */
     private static void tratarMensagemServidor(String linha) {
-        // Desativar temporariamente o timer enquanto processamos e imprimimos a mensagem
-        atualizarDisplay = false;
-
+        atualizarDisplay = false; // Pausa o timer durante a impressão de novos dados
         String[] partes = linha.split(";");
 
         synchronized (LOCK_CONSOLA) {
@@ -237,162 +235,151 @@ public class ClienteJogo {
             if (partes[0].equals(ProtocolMessages.BEM_VINDO)) {
                 meuIdJogador = Integer.parseInt(partes[1]);
                 totalJogadores = partes[2].equals("?") ? 0 : Integer.parseInt(partes[2]);
-
-                System.out.println();
-                System.out.println("+--------------------------------+");
-                System.out.println("|      BEM-VINDO AO JOGO         |");
-                System.out.printf("|   E o Jogador #%-2d             |%n", meuIdJogador);
-                if (totalJogadores > 0) {
-                    System.out.printf("|   Total de jogadores: %-2d      |%n", totalJogadores);
-                }
-                System.out.println("+--------------------------------+");
+                imprimirBoasVindas();
 
             } else if (partes[0].equals(ProtocolMessages.INICIO)) {
-                jogoIniciado = true;
-                letrasUsadasProprias.clear();
-                letrasUsadasGlobais = "-";
-                rondaAtual = 0;
-
-                String mascara = partes[1];
-                int tentativas = Integer.parseInt(partes[2]);
-                tempoRondaSegundos = Long.parseLong(partes[3]) / 1000;
-
-                // FIX BUG 8: guarda o máximo de tentativas para calcular erros e barra
-                maxTentativas = tentativas;
-
-                System.out.println();
-                System.out.println("====== JOGO INICIADO ======");
-                System.out.println("Palavra:      " + mascara);
-                System.out.println("Erros:        0/" + tentativas);
-                System.out.println("Tempo/ronda:  " + tempoRondaSegundos + "s");
-                System.out.println("===========================");
+                configurarJogoInicial(partes);
 
             } else if (partes[0].equals(ProtocolMessages.RODADA)) {
-                podeJogar = true;
-
-                rondaAtual = Integer.parseInt(partes[1]);
-                palavraMascara = partes[2];
-                tentativasAtual = Integer.parseInt(partes[3]);
-                // FIX BUG 9: partes[4] tem as letras usadas por TODOS os jogadores
-                letrasUsadasGlobais = partes.length > 4 ? partes[4] : "-";
-
-                int erros = maxTentativas - tentativasAtual;
-
-                System.out.println();
-                System.out.println("+----------------------------------------------+");
-                System.out.println("| Ronda:        " + rondaAtual + "/10");
-                System.out.println("| Palavra:      " + palavraMascara);
-                System.out.println("| Erros:        " + erros + "/" + maxTentativas);
-                System.out.println("| Letras (todos):  " + letrasUsadasGlobais);
-                System.out.println("| Letras (minhas): " + formatarLetrasProprias());
-                System.out.println("| Tempo:        " + desenharTimer(tempoRondaSegundos));
-                System.out.println("+----------------------------------------------+");
-
-                // Forca avança a cada erro
-                System.out.println(desenharForca(erros));
-
-                // Registar tempo inicial para o countdown APÓS imprimir tudo
-                // para evitar que o timer dispare a meio da impressão
-                inicioRonda = System.currentTimeMillis();
-                atualizarDisplay = true;
-
-                mostrarPrompt();
+                processarNovaRonda(partes);
 
             } else if (partes[0].equals(ProtocolMessages.ESTADO)) {
-                podeJogar = false;
-                atualizarDisplay = false;
-
-                String mascara = partes[1];
-                int tentativas = Integer.parseInt(partes[2]);
-                // FIX BUG 9: partes[3] tem as letras usadas globais no ESTADO
-                letrasUsadasGlobais = partes.length > 3 ? partes[3] : "-";
-                tentativasAtual = tentativas;
-
-                System.out.println();
-                System.out.println("> Estado: " + mascara +
-                        " | Tentativas: " + tentativas +
-                        " | Usadas (todos): " + letrasUsadasGlobais +
-                        " | Minhas: " + formatarLetrasProprias());
+                atualizarEstadoIntermedio(partes);
 
             } else if (partes[0].equals(ProtocolMessages.FIM_VITORIA)) {
-                jogoFinalizado = true;
-                podeJogar = false;
-                atualizarDisplay = false;
-
-                String vencedoresIds = partes[1];
-                String palavra = partes[2];
-
-                boolean souVencedor = false;
-                String[] ids = vencedoresIds.split(",");
-
-                for (String id : ids) {
-                    if (Integer.parseInt(id.trim()) == meuIdJogador) {
-                        souVencedor = true;
-                        break;
-                    }
-                }
-
-                System.out.println();
-                // Forca mostra o estado final (erros)
-                int erros = maxTentativas - tentativasAtual;
-                System.out.println(desenharForca(erros));
-                System.out.println("+--------------------------------+");
-                if (souVencedor) {
-                    System.out.println("|         *** VITORIA! ***       |");
-                } else {
-                    System.out.println("|         *** DERROTA! ***       |");
-                }
-                System.out.println("|  Palavra: " + palavra + padding(palavra, 21) + "|");
-                String displayVencedores = "P" + vencedoresIds.replace(",", ", P");
-                System.out.println("|  Vencedor(es): " + displayVencedores + padding(displayVencedores, 15) + "|");
-                System.out.println("|                                |");
-                System.out.println("|   JOGO TERMINADO - ATÉ JÁ!     |");
-                System.out.println("+--------------------------------+");
+                processarFimJogo(partes, true);
 
             } else if (partes[0].equals(ProtocolMessages.FIM_PERDA)) {
-                jogoFinalizado = true;
-                podeJogar = false;
-                atualizarDisplay = false;
-
-                String palavra = partes[1];
-
-                System.out.println();
-                System.out.println(desenharForca(maxTentativas));
-                System.out.println("+--------------------------------+");
-                System.out.println("|         *** DERROTA! ***       |");
-                System.out.println("|  A palavra era: " + palavra + padding(palavra, 15) + "|");
-                System.out.println("|                                |");
-                System.out.println("|   JOGO TERMINADO - ATÉ JÁ!     |");
-                System.out.println("+--------------------------------+");
+                processarFimJogo(partes, false);
 
             } else if (linha.equals(ProtocolMessages.CHEIO)) {
-                jogoFinalizado = true;
-                podeJogar = false;
-                atualizarDisplay = false;
-
                 System.out.println();
                 System.out.println("+--------------------------------+");
                 System.out.println("|  Servidor cheio ou jogo ja     |");
                 System.out.println("|  em curso. Tente novamente     |");
                 System.out.println("|  mais tarde.                   |");
                 System.out.println("+--------------------------------+");
+                jogoFinalizado = true;
 
             } else if (linha.equals(ProtocolMessages.LOBBY_TIMEOUT)) {
-                jogoFinalizado = true;
-                podeJogar = false;
-                atualizarDisplay = false;
-
                 System.out.println();
                 System.out.println("+--------------------------------+");
                 System.out.println("|  Tempo de lobby expirado.      |");
                 System.out.println("|  Jogadores insuficientes.      |");
                 System.out.println("|  Servidor encerrado.           |");
                 System.out.println("+--------------------------------+");
+                jogoFinalizado = true;
 
             } else {
                 System.out.println("[Servidor] " + linha);
             }
         }
+    }
+
+    private static void imprimirBoasVindas() {
+        System.out.println("\n+--------------------------------+");
+        System.out.println("|      BEM-VINDO AO JOGO         |");
+        System.out.printf("|   E o Jogador #%-2d             |%n", meuIdJogador);
+        if (totalJogadores > 0) {
+            System.out.printf("|   Total de jogadores: %-2d      |%n", totalJogadores);
+        }
+        System.out.println("+--------------------------------+");
+    }
+
+    private static void configurarJogoInicial(String[] partes) {
+        jogoIniciado = true;
+        letrasUsadasProprias.clear();
+        letrasUsadasGlobais = "-";
+        rondaAtual = 0;
+
+        String mascara = partes[1];
+        maxTentativas = Integer.parseInt(partes[2]);
+        tempoRondaSegundos = Long.parseLong(partes[3]) / 1000;
+
+        System.out.println("\n====== JOGO INICIADO ======");
+        System.out.println("Palavra:      " + mascara);
+        System.out.println("Erros:        0/" + maxTentativas);
+        System.out.println("Tempo/ronda:  " + tempoRondaSegundos + "s");
+        System.out.println("===========================");
+    }
+
+    private static void processarNovaRonda(String[] partes) {
+        podeJogar = true;
+        rondaAtual = Integer.parseInt(partes[1]);
+        palavraMascara = partes[2];
+        tentativasAtual = Integer.parseInt(partes[3]);
+        letrasUsadasGlobais = partes.length > 4 ? partes[4] : "-";
+
+        int erros = maxTentativas - tentativasAtual;
+
+        System.out.println("\n+----------------------------------------------+");
+        System.out.println("| Ronda:        " + rondaAtual + "/10");
+        System.out.println("| Palavra:      " + palavraMascara);
+        System.out.println("| Erros:        " + erros + "/" + maxTentativas);
+        System.out.println("| Letras (todos):  " + letrasUsadasGlobais);
+        System.out.println("| Letras (minhas): " + formatarLetrasProprias());
+        System.out.println("| Tempo:        " + desenharTimer(tempoRondaSegundos));
+        System.out.println("+----------------------------------------------+");
+        System.out.println(desenharForca(erros));
+
+        inicioRonda = System.currentTimeMillis();
+        atualizarDisplay = true;
+        mostrarPrompt();
+    }
+
+    private static void atualizarEstadoIntermedio(String[] partes) {
+        podeJogar = false;
+        atualizarDisplay = false;
+
+        String mascara = partes[1];
+        tentativasAtual = Integer.parseInt(partes[2]);
+        letrasUsadasGlobais = partes.length > 3 ? partes[3] : "-";
+
+        System.out.println("\n> Estado: " + mascara +
+                " | Tentativas: " + tentativasAtual +
+                " | Usadas (todos): " + letrasUsadasGlobais +
+                " | Minhas: " + formatarLetrasProprias());
+    }
+
+    private static void processarFimJogo(String[] partes, boolean vitoria) {
+        jogoFinalizado = true;
+        podeJogar = false;
+        atualizarDisplay = false;
+
+        System.out.println("\n" + desenharForca(maxTentativas - tentativasAtual));
+        System.out.println("+--------------------------------+");
+        
+        if (vitoria) {
+            String vencedoresIds = partes[1];
+            String palavra = partes[2];
+
+            boolean souVencedor = false;
+            String[] ids = vencedoresIds.split(",");
+
+            for (String id : ids) {
+                if (Integer.parseInt(id.trim()) == meuIdJogador) {
+                    souVencedor = true;
+                    break;
+                }
+            }
+
+            if (souVencedor) {
+                System.out.println("|         *** VITORIA! ***       |");
+            } else {
+                System.out.println("|         *** DERROTA! ***       |");
+            }
+            System.out.println("|  Palavra: " + palavra + padding(palavra, 21) + "|");
+            String displayVencedores = "P" + vencedoresIds.replace(",", ", P");
+            System.out.println("|  Vencedor(es): " + displayVencedores + padding(displayVencedores, 15) + "|");
+        } else {
+            String palavra = partes[1];
+            System.out.println("|         *** DERROTA! ***       |");
+            System.out.println("|  A palavra era: " + palavra + padding(palavra, 15) + "|");
+        }
+        
+        System.out.println("|                                |");
+        System.out.println("|   JOGO TERMINADO - ATÉ JÁ!     |");
+        System.out.println("+--------------------------------+");
     }
 
     private static void registarJogadaPropria(String jogada) {
@@ -405,23 +392,17 @@ public class ClienteJogo {
     }
 
     private static String formatarLetrasProprias() {
-        if (letrasUsadasProprias.isEmpty()) {
-            return "(nenhuma)";
-        }
-
-        StringBuilder sb = new StringBuilder();
-        for (char c : letrasUsadasProprias) {
-            if (sb.length() > 0) {
-                sb.append(",");
-            }
-            sb.append(c);
-        }
-        return sb.toString();
+        if (letrasUsadasProprias.isEmpty()) return "(nenhuma)";
+        return letrasUsadasProprias.stream()
+                .map(String::valueOf)
+                .collect(Collectors.joining(","));
     }
 
+    /**
+     * Desenha uma barra de progresso visual para o timer.
+     */
     private static String desenharTimer(long segundos) {
         int totalBlocos = 10;
-        // FIX: Usa tempoRondaSegundos em vez de 15 fixo
         int preenchidos = (int) Math.min(totalBlocos, Math.max(0, segundos * totalBlocos / tempoRondaSegundos));
 
         StringBuilder sb = new StringBuilder("[");
@@ -432,13 +413,19 @@ public class ClienteJogo {
         return sb.toString();
     }
 
+    /**
+     * Representação ASCII da forca baseada no número de erros.
+     */
     private static String desenharForca(int erros) {
-        boolean cabeca = erros >= 1;
-        boolean tronco = erros >= 2;
-        boolean bracoEsq = erros >= 3;
-        boolean bracoDir = erros >= 4;
-        boolean pernaEsq = erros >= 5;
-        boolean pernaDir = erros >= 6;
+        // Normaliza para o máximo de 6 estágios visuais da forca clássica
+        int estagio = (int) Math.round(erros * 6.0 / maxTentativas);
+        
+        boolean cabeca = estagio >= 1;
+        boolean tronco = estagio >= 2;
+        boolean bracoEsq = estagio >= 3;
+        boolean bracoDir = estagio >= 4;
+        boolean pernaEsq = estagio >= 5;
+        boolean pernaDir = estagio >= 6;
 
         String l1 = "   +------+";                       
         String l2 = "   |      |";
@@ -448,27 +435,15 @@ public class ClienteJogo {
         String l6 = "   |";
         String l7 = "==========";
 
-        return l1 + "\n" +
-               l2 + "\n" +
-               l3 + "\n" +
-               l4 + "\n" +
-               l5 + "\n" +
-               l6 + "\n" +
-               l7;
-    }
-
-    // FIX BUG 8: barra usa maxTentativas (10) como total de blocos, não 6
-    private static String barraTentativas(int tentativas) {
-        StringBuilder sb = new StringBuilder("[");
-        for (int i = 0; i < maxTentativas; i++) {
-            sb.append(i < tentativas ? "#" : "-");
-        }
-        sb.append("]");
-        return sb.toString();
+        return l1 + "\n" + l2 + "\n" + l3 + "\n" + l4 + "\n" + l5 + "\n" + l6 + "\n" + l7;
     }
 
     private static String padding(String texto, int larguraTotal) {
         int espacos = larguraTotal - texto.length();
         return espacos > 0 ? " ".repeat(espacos) : "";
+    }
+
+    private static void dormir(long ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
     }
 }

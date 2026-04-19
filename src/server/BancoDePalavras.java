@@ -5,8 +5,9 @@ import java.nio.file.*;
 import java.util.*;
 
 /**
- * Carrega palavras de words.txt (ou usa lista embutida como fallback)
- * e devolve uma palavra aleatória.
+ * Gestor do repositório de palavras para o jogo.
+ * Carrega palavras a partir de um ficheiro externo (words.txt) ou utiliza uma 
+ * lista interna de recurso (fallback) caso o ficheiro não esteja disponível.
  */
 public class BancoDePalavras {
 
@@ -24,13 +25,13 @@ public class BancoDePalavras {
                         carregadas.add(palavra);
                     }
                 }
-                System.out.println("[BancoDePalavras] Carregadas " + carregadas.size() + " palavras de words.txt");
+                System.out.println("[Servidor] Carregadas " + carregadas.size() + " palavras do ficheiro.");
             }
         } catch (IOException e) {
             System.err.println("[BancoDePalavras] Erro ao ler words.txt: " + e.getMessage());
         }
 
-        // Fallback embutido
+        // Fallback embutido caso o ficheiro externo falhe ou esteja vazio
         if (carregadas.isEmpty()) {
             carregadas = Arrays.asList(
                 "PROGRAMACAO", "DISTRIBUIDO", "SERVIDOR", "PROTOCOLO",
@@ -44,7 +45,10 @@ public class BancoDePalavras {
 
     private static final Random ALEATORIO = new Random();
 
-    /** Devolve uma palavra aleatória em maiúsculas. */
+    /** 
+     * Seleciona e devolve uma palavra aleatória do repositório.
+     * @return Uma String em maiúsculas representando a palavra escolhida.
+     */
     public static String getPalavraAleatoria() {
         return PALAVRAS.get(ALEATORIO.nextInt(PALAVRAS.size()));
     }

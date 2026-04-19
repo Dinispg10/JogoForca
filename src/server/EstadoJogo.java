@@ -2,6 +2,14 @@ package server;
 
 import java.util.*;
 
+/**
+ * Representa o estado interno e a lógica de negócio de uma partida de Jogo da Forca.
+ * Esta classe é responsável por validar jogadas, atualizar a máscara da palavra,
+ * gerir tentativas individuais e determinar as condições de vitória ou derrota.
+ * 
+ * <p>Todas as operações que alteram ou lêem o estado são sincronizadas para garantir 
+ * thread-safety num ambiente multijogador competitivo.</p>
+ */
 public class EstadoJogo {
 
     private final String palavra;
@@ -13,6 +21,11 @@ public class EstadoJogo {
     
     private boolean finalizado;
 
+    /**
+     * Inicializa um novo estado de jogo.
+     * @param palavra A palavra secreta da partida.
+     * @param maxTentativas O limite de erros permitidos para cada jogador.
+     */
     public EstadoJogo(String palavra, int maxTentativas) {
         this.palavra = palavra.toUpperCase();
         this.maxTentativas = maxTentativas;
@@ -22,10 +35,21 @@ public class EstadoJogo {
         this.finalizado = false;
     }
 
+    /**
+     * Regista um novo jogador no estado inicial.
+     * @param idJogador ID único do jogador.
+     */
     public synchronized void adicionarJogador(int idJogador) {
         tentativasPorJogador.put(idJogador, maxTentativas);
     }
 
+    /**
+     * Processa o conjunto de jogadas recebidas no final de uma ronda.
+     * Aplica as regras de negócio: decremento de tentativas por erro, 
+     * descoberta de letras e verificação de adivinhação da palavra completa.
+     * 
+     * @param jogadas Mapa contendo os IDs dos jogadores e as suas respetivas jogadas (letra ou palavra).
+     */
     public synchronized void processarJogadasDaRonda(Map<Integer, String> jogadas) {
         if (finalizado) return;
 
@@ -77,13 +101,11 @@ public class EstadoJogo {
             String jogada = entry.getValue();
             if (jogada != null && jogada.trim().toUpperCase().equals(palavra)) {
                 alguemAcertouPalavraCompleta = true;
-                if (!vencedores.contains(entry.getKey())) vencedores.add(entry.getKey());
+                break;
             }
         }
 
-        if (alguemAcertouPalavraCompleta) {
-            finalizado = true;
-        } else if (palavraDescoberta()) {
+        if (alguemAcertouPalavraCompleta || palavraDescoberta()) {
             finalizado = true;
             for (int id : acertaram) {
                 if (!vencedores.contains(id)) vencedores.add(id);
@@ -94,10 +116,13 @@ public class EstadoJogo {
             consumirTentativa(id);
         }
 
-        // NOVO: Verificar fim de jogo apenas depois de processar todos os erros da ronda
+        // Verifica condições de término (morte de todos ou vitória) após processar erros
         verificarFimDeJogo();
     }
 
+    /**
+     * Verifica se todas as letras da palavra secreta já foram descobertas.
+     */
     private boolean palavraDescoberta() {
         for (char c : palavra.toCharArray()) {
             if (!letrasUsadas.contains(c)) {
@@ -107,6 +132,10 @@ public class EstadoJogo {
         return true;
     }
 
+    /**
+     * Retorna a representação visual da palavra (máscara).
+     * @return String com letras descobertas e underscores para as ocultas.
+     */
     public synchronized String getMascara() {
         StringBuilder sb = new StringBuilder();
 
@@ -121,10 +150,16 @@ public class EstadoJogo {
         return sb.toString().trim();
     }
 
+    /**
+     * Obtém as tentativas restantes para um jogador específico.
+     */
     public synchronized int getTentativasRestantes(int idJogador) {
         return tentativasPorJogador.getOrDefault(idJogador, 0);
     }
 
+    /**
+     * Retorna uma lista formatada das letras já utilizadas.
+     */
     public synchronized String getLetrasUsadasStr() {
         List<Character> lista = new ArrayList<>(letrasUsadas);
         Collections.sort(lista);
@@ -148,13 +183,17 @@ public class EstadoJogo {
         this.finalizado = finalizado;
     }
 
+    /**
+     * Remove um jogador do jogo (ex: por desconexão), esgotando as suas tentativas.
+     */
     public synchronized void eliminarJogador(int idJogador) {
         if (finalizado) return;
         tentativasPorJogador.put(idJogador, 0);
-        // Não chamamos verificarFimDeJogo aqui porque o GestorDeJogo
-        // vai decidir se o jogo continua com base nos jogadores ligados.
     }
 
+    /**
+     * Decrementa uma tentativa do jogador indicado.
+     */
     public synchronized void consumirTentativa(int idJogador) {
         int t = tentativasPorJogador.getOrDefault(idJogador, 0);
         if (t > 0) {
@@ -163,18 +202,17 @@ public class EstadoJogo {
     }
 
     /**
-     * Verifica se o jogo deve terminar após o processamento de todas as jogadas da ronda.
+     * Avalia se as condições globais de fim de jogo foram atingidas.
+     * O jogo termina se houver vencedores ou se todos os jogadores ficarem sem tentativas.
      */
     public synchronized void verificarFimDeJogo() {
         if (finalizado) return;
 
-        // Se alguém adivinhou a palavra, já está na lista de vencedores
         if (!vencedores.isEmpty()) {
             finalizado = true;
             return;
         }
 
-        // Verificar se TODOS ficaram sem tentativas
         boolean todosMortos = true;
         for (int t : tentativasPorJogador.values()) {
             if (t > 0) {
@@ -185,7 +223,6 @@ public class EstadoJogo {
 
         if (todosMortos) {
             finalizado = true;
-            // Neste caso (derrota total), vencedores continua vazio.
         }
     }
 
