@@ -85,12 +85,18 @@ public class GestorDeJogo implements Runnable {
                 }
             }
 
-            System.out.println("[GestorDeJogo] Ronda " + rondaAtual + " — à espera das jogadas...");
+            System.out.println("[GestorDeJogo] Ronda " + rondaAtual + " - à espera das jogadas...");
             dormir(TEMPO_RODADA);
 
             processarResultadosRonda();
 
             if (estado.isFinalizado()) {
+                break;
+            }
+
+            if (rondaAtual >= 10) {
+                System.out.println("[GestorDeJogo] Limite de 10 rondas atingido!");
+                estado.setFinalizado(true);
                 break;
             }
 
@@ -104,36 +110,17 @@ public class GestorDeJogo implements Runnable {
     private void processarResultadosRonda() {
         System.out.println("[GestorDeJogo] A processar ronda " + rondaAtual);
 
+        Map<Integer, String> jogadas = new HashMap<>();
         for (GestorCliente jogador : jogadores) {
-            if (!jogador.isConectado()) {
-                continue;
-            }
-
-            String jogada = jogador.obterELimparJogada();
-
-            if (jogada == null || jogada.isBlank()) {
-                System.out.println("[GestorDeJogo] J" + jogador.getIdJogador() + " não jogou (Timeout). Consome 1 tentativa apenas ao J" + jogador.getIdJogador());
-                if (!estado.isFinalizado()) {
-                    estado.consumirTentativa(jogador.getIdJogador());
-                }
-                continue;
-            }
-
-            System.out.println("[GestorDeJogo] J" + jogador.getIdJogador() + " jogou: " + jogada);
-
-            if (!estado.isFinalizado()) {
-                boolean correto = estado.processarJogada(jogada, jogador.getIdJogador());
-                if (!correto) {
-                    System.out.println("[GestorDeJogo] J" + jogador.getIdJogador() + " errou. Consome 1 tentativa apenas ao J" + jogador.getIdJogador());
-                    estado.consumirTentativa(jogador.getIdJogador());
-                }
-
-                System.out.println("[GestorDeJogo]   → " +
-                        (correto ? "ACERTOU" : "ERROU") +
-                        " | Máscara: " + estado.getMascara() +
-                        " | Tentativas J" + jogador.getIdJogador() + ": " + estado.getTentativasRestantes(jogador.getIdJogador()));
+            if (jogador.isConectado()) {
+                String jogada = jogador.obterELimparJogada();
+                System.out.println("[GestorDeJogo] J" + jogador.getIdJogador() + " jogou: " + (jogada == null || jogada.isBlank() ? "nada (Timeout)" : jogada));
+                jogadas.put(jogador.getIdJogador(), jogada);
             }
         }
+
+        estado.processarJogadasDaRonda(jogadas);
+        System.out.println("[GestorDeJogo]   -> Máscara atual: " + estado.getMascara());
 
         // Enviar estado personalizado
         for (GestorCliente jogador : jogadores) {
@@ -158,12 +145,10 @@ public class GestorDeJogo implements Runnable {
                     .map(String::valueOf)
                     .collect(Collectors.joining(","));
 
-            String motivo = palavraAdivinhada ? "-" : "Adversarios sem tentativas!";
-            broadcast(ProtocolMessages.fimVitoria(idsVencedores, estado.getPalavra(), motivo));
-            System.out.println("[GestorDeJogo] Vencedores: " + idsVencedores + " Motivo: " + motivo);
+            broadcast(ProtocolMessages.fimVitoria(idsVencedores, estado.getPalavra()));
+            System.out.println("[GestorDeJogo] Vencedores: " + idsVencedores);
         } else {
-            String motivo = "Sem tentativas restantes!";
-            broadcast(ProtocolMessages.fimPerda(estado.getPalavra(), motivo));
+            broadcast(ProtocolMessages.fimPerda(estado.getPalavra()));
             System.out.println("[GestorDeJogo] Derrota total. A palavra era: " + estado.getPalavra());
         }
 
@@ -179,6 +164,14 @@ public class GestorDeJogo implements Runnable {
 
         if (removido) {
             System.out.println("[GestorDeJogo] J" + idJogador + " desligou-se. Ativos: " + jogadoresAtivos.size());
+            
+            // Requisito novo: se um jogador se desconecta a meio, ele perde
+            // e o jogo acaba dando vitória aos outros.
+            if (jogoARodar && !estado.isFinalizado()) {
+                System.out.println("[GestorDeJogo] J" + idJogador + " abandonou o jogo! A terminar sessão.");
+                estado.eliminarJogador(idJogador);
+                jogoARodar = false;
+            }
         }
 
         if (jogadoresAtivos.isEmpty()) {

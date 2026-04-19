@@ -47,8 +47,6 @@ public class ClienteJogo {
     // FIX BUG 9: letras usadas por TODOS os jogadores (recebidas do servidor)
     private static volatile String letrasUsadasGlobais = "-";
 
-    // Número máximo de rondas para completar o desenho da forca
-    private static final int MAX_PARTES_FORCA = 8;
 
     public static void main(String[] args) throws IOException {
         String host = args.length > 0 ? args[0] : HOST;
@@ -82,10 +80,13 @@ public class ClienteJogo {
         Thread recetor = new Thread(() -> {
             try {
                 String linha;
-                while ((linha = entrada.readLine()) != null) {
-                    tratarMensagemServidor(linha);
-                    if (jogoFinalizado) {
-                        break;
+                while (!jogoFinalizado && (linha = entrada.readLine()) != null) {
+                    try {
+                        tratarMensagemServidor(linha);
+                    } catch (Exception e) {
+                        synchronized (LOCK_CONSOLA) {
+                            System.err.println("[!] Erro ao processar mensagem do servidor: " + e.getMessage());
+                        }
                     }
                 }
             } catch (IOException e) {
@@ -98,8 +99,32 @@ public class ClienteJogo {
                         System.out.println("[!] A ligação ao servidor foi encerrada.");
                     }
                 }
+            } finally {
+                jogoFinalizado = true;
+                podeJogar = false;
+                atualizarDisplay = false;
+
+                // Fechar socket para interromper o stdin.readLine() se possível
+                try {
+                    socket.close();
+                } catch (IOException ignored) {
+                }
+                
+                // Aguardar tempo suficiente para a box de vitória/derrota ser totalmente impressa
+                try {
+                    Thread.sleep(1500);
+                } catch (InterruptedException ignored) {
+                }
+
+                // Dar tempo para o flush chegar ao terminal antes de matar o processo
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException ignored) {
+                }
+                
+                // Forçar saída para garantir que o programa termina, mesmo com o main bloqueado em readLine
+                System.exit(0);
             }
-            jogoFinalizado = true;
         }, "Recetor");
 
         recetor.setDaemon(true);
@@ -115,9 +140,9 @@ public class ClienteJogo {
                     if (restantes < 0) restantes = 0;
                     
                     synchronized (LOCK_CONSOLA) {
-                        if (promptVisivel) {
+                        if (promptVisivel && !jogoFinalizado && podeJogar) {
                             System.out.print("\033[s"); // Save cursor
-                            System.out.print("\033[11A"); // Move up 11 lines
+                            System.out.print("\033[10A"); // Move up 10 lines
                             System.out.print("\r\033[2K"); // Carriage return & clear line
                             System.out.print("| Tempo:        " + desenharTimer(restantes));
                             System.out.print("\033[u"); // Restore cursor
@@ -163,7 +188,7 @@ public class ClienteJogo {
                 continue;
             }
 
-            if (!jogada.matches("[A-Z]+")) {
+            if (!jogada.matches("\\p{L}+")) {
                 synchronized (LOCK_CONSOLA) {
                     System.out.println("[!] Só são aceites letras (sem espaços, números ou símbolos).");
                 }
@@ -181,25 +206,26 @@ public class ClienteJogo {
             podeJogar = false;
         }
 
-        socket.close();
-
-        synchronized (LOCK_CONSOLA) {
-            System.out.println();
-            System.out.println("Jogo terminado. Até à próxima!");
-        }
+        // Nota: A thread recetor chama System.exit(0) quando o jogo termina,
+        // portanto este código não é executado. Mantém-se para clareza.
     }
 
     private static void mostrarPrompt() {
         // FIX BUG 2: loop interno redundante removido — podeJogar já é true quando esta
         // função é chamada (o loop principal em main() garante isso)
         synchronized (LOCK_CONSOLA) {
-            System.out.print("==========\nA sua jogada (letra ou palavra): ");
-            System.out.flush();
-            promptVisivel = true;
+            if (!promptVisivel) {
+                System.out.print("==========\nA sua jogada (letra ou palavra): ");
+                System.out.flush();
+                promptVisivel = true;
+            }
         }
     }
 
     private static void tratarMensagemServidor(String linha) {
+        // Desativar temporariamente o timer enquanto processamos e imprimimos a mensagem
+        atualizarDisplay = false;
+
         String[] partes = linha.split(";");
 
         synchronized (LOCK_CONSOLA) {
@@ -237,7 +263,7 @@ public class ClienteJogo {
                 System.out.println();
                 System.out.println("====== JOGO INICIADO ======");
                 System.out.println("Palavra:      " + mascara);
-                System.out.println("Tentativas:   " + tentativas);
+                System.out.println("Erros:        0/" + tentativas);
                 System.out.println("Tempo/ronda:  " + tempoRondaSegundos + "s");
                 System.out.println("===========================");
 
@@ -250,24 +276,27 @@ public class ClienteJogo {
                 // FIX BUG 9: partes[4] tem as letras usadas por TODOS os jogadores
                 letrasUsadasGlobais = partes.length > 4 ? partes[4] : "-";
 
-                // Registar tempo inicial para o countdown
-                inicioRonda = System.currentTimeMillis();
-                atualizarDisplay = true;
+                int erros = maxTentativas - tentativasAtual;
 
                 System.out.println();
-                System.out.println("+-------------- Ronda " + rondaAtual + " --------------+");
+                System.out.println("+----------------------------------------------+");
+                System.out.println("| Ronda:        " + rondaAtual + "/10");
                 System.out.println("| Palavra:      " + palavraMascara);
-                // FIX BUG 8: barraTentativas usa maxTentativas como total
-                System.out.println("| Tentativas:   " + barraTentativas(tentativasAtual) + " (" + tentativasAtual + " restantes)");
-                // FIX BUG 9: mostra letras de todos os jogadores (do servidor) + as próprias
+                System.out.println("| Erros:        " + erros + "/" + maxTentativas);
                 System.out.println("| Letras (todos):  " + letrasUsadasGlobais);
                 System.out.println("| Letras (minhas): " + formatarLetrasProprias());
                 System.out.println("| Tempo:        " + desenharTimer(tempoRondaSegundos));
-                System.out.println("| Progresso:    " + rondaAtual + "/" + MAX_PARTES_FORCA);
                 System.out.println("+----------------------------------------------+");
 
-                // Forca avança a cada ronda — design intencional
-                System.out.println(desenharForca(rondaAtual));
+                // Forca avança a cada erro
+                System.out.println(desenharForca(erros));
+
+                // Registar tempo inicial para o countdown APÓS imprimir tudo
+                // para evitar que o timer dispare a meio da impressão
+                inicioRonda = System.currentTimeMillis();
+                atualizarDisplay = true;
+
+                mostrarPrompt();
 
             } else if (partes[0].equals(ProtocolMessages.ESTADO)) {
                 podeJogar = false;
@@ -292,7 +321,6 @@ public class ClienteJogo {
 
                 String vencedoresIds = partes[1];
                 String palavra = partes[2];
-                String motivo = partes.length > 3 ? partes[3] : "Fim de jogo";
 
                 boolean souVencedor = false;
                 String[] ids = vencedoresIds.split(",");
@@ -305,8 +333,9 @@ public class ClienteJogo {
                 }
 
                 System.out.println();
-                // Forca mostra o estado final da ronda
-                System.out.println(desenharForca(rondaAtual));
+                // Forca mostra o estado final (erros)
+                int erros = maxTentativas - tentativasAtual;
+                System.out.println(desenharForca(erros));
                 System.out.println("+--------------------------------+");
                 if (souVencedor) {
                     System.out.println("|         *** VITORIA! ***       |");
@@ -314,10 +343,10 @@ public class ClienteJogo {
                     System.out.println("|         *** DERROTA! ***       |");
                 }
                 System.out.println("|  Palavra: " + palavra + padding(palavra, 21) + "|");
-                System.out.println("|  Vencedor(es): P" + vencedoresIds + padding("P" + vencedoresIds, 14) + "|");
-                if (!"-".equals(motivo)) {
-                    System.out.println("|  " + motivo + padding(motivo, 30) + "|");
-                }
+                String displayVencedores = "P" + vencedoresIds.replace(",", ", P");
+                System.out.println("|  Vencedor(es): " + displayVencedores + padding(displayVencedores, 15) + "|");
+                System.out.println("|                                |");
+                System.out.println("|   JOGO TERMINADO - ATÉ JÁ!     |");
                 System.out.println("+--------------------------------+");
 
             } else if (partes[0].equals(ProtocolMessages.FIM_PERDA)) {
@@ -326,16 +355,14 @@ public class ClienteJogo {
                 atualizarDisplay = false;
 
                 String palavra = partes[1];
-                String motivo = partes.length > 2 ? partes[2] : "Fim de jogo";
 
                 System.out.println();
-                System.out.println(desenharForca(MAX_PARTES_FORCA));
+                System.out.println(desenharForca(maxTentativas));
                 System.out.println("+--------------------------------+");
                 System.out.println("|         *** DERROTA! ***       |");
                 System.out.println("|  A palavra era: " + palavra + padding(palavra, 15) + "|");
-                if (!"-".equals(motivo)) {
-                    System.out.println("|  " + motivo + padding(motivo, 30) + "|");
-                }
+                System.out.println("|                                |");
+                System.out.println("|   JOGO TERMINADO - ATÉ JÁ!     |");
                 System.out.println("+--------------------------------+");
 
             } else if (linha.equals(ProtocolMessages.CHEIO)) {
@@ -348,6 +375,18 @@ public class ClienteJogo {
                 System.out.println("|  Servidor cheio ou jogo ja     |");
                 System.out.println("|  em curso. Tente novamente     |");
                 System.out.println("|  mais tarde.                   |");
+                System.out.println("+--------------------------------+");
+
+            } else if (linha.equals(ProtocolMessages.LOBBY_TIMEOUT)) {
+                jogoFinalizado = true;
+                podeJogar = false;
+                atualizarDisplay = false;
+
+                System.out.println();
+                System.out.println("+--------------------------------+");
+                System.out.println("|  Tempo de lobby expirado.      |");
+                System.out.println("|  Jogadores insuficientes.      |");
+                System.out.println("|  Servidor encerrado.           |");
                 System.out.println("+--------------------------------+");
 
             } else {
@@ -382,7 +421,8 @@ public class ClienteJogo {
 
     private static String desenharTimer(long segundos) {
         int totalBlocos = 10;
-        int preenchidos = (int) Math.min(totalBlocos, Math.max(0, segundos * totalBlocos / 15));
+        // FIX: Usa tempoRondaSegundos em vez de 15 fixo
+        int preenchidos = (int) Math.min(totalBlocos, Math.max(0, segundos * totalBlocos / tempoRondaSegundos));
 
         StringBuilder sb = new StringBuilder("[");
         for (int i = 0; i < totalBlocos; i++) {
@@ -392,29 +432,21 @@ public class ClienteJogo {
         return sb.toString();
     }
 
-    private static String desenharForca(int ronda) {
-        int etapa = Math.min(Math.max(ronda, 0), MAX_PARTES_FORCA);
-
-        boolean base = etapa >= 1;
-        boolean poste = etapa >= 2;
-        boolean topo = etapa >= 3;
-        boolean corda = etapa >= 4;
-        boolean cabeca = etapa >= 5;
-        boolean tronco = etapa >= 6;
-        boolean bracos = etapa >= 7;
-        boolean pernas = etapa >= 8;
+    private static String desenharForca(int erros) {
+        boolean cabeca = erros >= 1;
+        boolean tronco = erros >= 2;
+        boolean bracoEsq = erros >= 3;
+        boolean bracoDir = erros >= 4;
+        boolean pernaEsq = erros >= 5;
+        boolean pernaDir = erros >= 6;
 
         String l1 = "   +------+";                       
-        String l2 = "   |      " + (corda ? "|" : "");
-        String l3 = poste ? (cabeca ? "   |      O" : "   |") : "          ";
-        String l4 = poste ? (bracos ? "   |     /|\\" : (tronco ? "   |      |" : "   |")) : "          ";
-        String l5 = poste ? (pernas ? "   |     / \\" : "   |") : "          ";
-        String l6 = poste ? "   |" : "";
-        String l7 = base ? "==========" : "";
-
-        if (!topo) {
-            l1 = "          ";
-        }
+        String l2 = "   |      |";
+        String l3 = cabeca ? "   |      O" : "   |";
+        String l4 = bracoDir ? "   |     /|\\" : (bracoEsq ? "   |     /|" : (tronco ? "   |      |" : "   |"));
+        String l5 = pernaDir ? "   |     / \\" : (pernaEsq ? "   |     /" : "   |");
+        String l6 = "   |";
+        String l7 = "==========";
 
         return l1 + "\n" +
                l2 + "\n" +

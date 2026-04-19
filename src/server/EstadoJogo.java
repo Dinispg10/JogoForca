@@ -26,47 +26,76 @@ public class EstadoJogo {
         tentativasPorJogador.put(idJogador, maxTentativas);
     }
 
-    public synchronized boolean processarJogada(String jogada, int idJogador) {
-        if (finalizado || jogada == null || jogada.isBlank()) {
-            return false;
-        }
+    public synchronized void processarJogadasDaRonda(Map<Integer, String> jogadas) {
+        if (finalizado) return;
 
-        jogada = jogada.trim().toUpperCase();
-        boolean correto = false;
+        Set<Character> letrasAAdicionar = new HashSet<>();
+        List<Integer> acertaram = new ArrayList<>();
+        List<Integer> erraram = new ArrayList<>();
 
-        if (jogada.length() == 1) {
-            char letra = jogada.charAt(0);
+        for (Map.Entry<Integer, String> entry : jogadas.entrySet()) {
+            int id = entry.getKey();
+            String jogada = entry.getValue();
 
-            if (!Character.isLetter(letra)) {
-                return false;
+            if (jogada == null || jogada.isBlank()) {
+                erraram.add(id);
+                continue;
             }
 
-            if (!letrasUsadas.contains(letra)) {
-                letrasUsadas.add(letra);
+            jogada = jogada.trim().toUpperCase();
 
-                if (palavra.indexOf(letra) >= 0) {
-                    correto = true;
+            if (jogada.length() == 1) {
+                char letra = jogada.charAt(0);
+                if (!Character.isLetter(letra)) {
+                    erraram.add(id);
+                    continue;
+                }
 
-                    if (palavraDescoberta()) {
-                        finalizado = true;
-                        if (!vencedores.contains(idJogador)) {
-                            vencedores.add(idJogador);
-                        }
+                if (letrasUsadas.contains(letra)) {
+                    erraram.add(id);
+                } else {
+                    letrasAAdicionar.add(letra);
+                    if (palavra.indexOf(letra) >= 0) {
+                        acertaram.add(id);
+                    } else {
+                        erraram.add(id);
                     }
                 }
-            }
-        } else {
-            if (jogada.equals(palavra)) {
-                correto = true;
-                finalizado = true;
-
-                if (!vencedores.contains(idJogador)) {
-                    vencedores.add(idJogador);
+            } else {
+                if (jogada.equals(palavra)) {
+                    acertaram.add(id);
+                } else {
+                    erraram.add(id);
                 }
             }
         }
 
-        return correto;
+        letrasUsadas.addAll(letrasAAdicionar);
+
+        boolean alguemAcertouPalavraCompleta = false;
+        for (Map.Entry<Integer, String> entry : jogadas.entrySet()) {
+            String jogada = entry.getValue();
+            if (jogada != null && jogada.trim().toUpperCase().equals(palavra)) {
+                alguemAcertouPalavraCompleta = true;
+                if (!vencedores.contains(entry.getKey())) vencedores.add(entry.getKey());
+            }
+        }
+
+        if (alguemAcertouPalavraCompleta) {
+            finalizado = true;
+        } else if (palavraDescoberta()) {
+            finalizado = true;
+            for (int id : acertaram) {
+                if (!vencedores.contains(id)) vencedores.add(id);
+            }
+        }
+
+        for (int id : erraram) {
+            consumirTentativa(id);
+        }
+
+        // NOVO: Verificar fim de jogo apenas depois de processar todos os erros da ronda
+        verificarFimDeJogo();
     }
 
     private boolean palavraDescoberta() {
@@ -119,23 +148,49 @@ public class EstadoJogo {
         this.finalizado = finalizado;
     }
 
-    public synchronized void consumirTentativa(int idJogador) {
+    public synchronized void eliminarJogador(int idJogador) {
         if (finalizado) return;
-        
+        tentativasPorJogador.put(idJogador, 0);
+        verificarFimDeJogo();
+    }
+
+    public synchronized void consumirTentativa(int idJogador) {
         int t = tentativasPorJogador.getOrDefault(idJogador, 0);
         if (t > 0) {
             tentativasPorJogador.put(idJogador, t - 1);
-            
-            if (t - 1 <= 0) {
-                finalizado = true;
-                
-                // Conforme pedido: se alguém chega a 0, o jogo acaba e ganham os outros!
-                for (Map.Entry<Integer, Integer> entry : tentativasPorJogador.entrySet()) {
-                    if (entry.getValue() > 0 && !vencedores.contains(entry.getKey())) {
-                        vencedores.add(entry.getKey());
-                    }
+        }
+    }
+
+    /**
+     * Verifica se o jogo deve terminar após o processamento de todas as jogadas da ronda.
+     */
+    public synchronized void verificarFimDeJogo() {
+        if (finalizado) return;
+
+        // Se alguém adivinhou a palavra, já está na lista de vencedores (pelo processarJogadasDaRonda)
+        if (!vencedores.isEmpty()) {
+            finalizado = true;
+            return;
+        }
+
+        // Caso contrário, verificar se alguém ficou sem tentativas
+        boolean alguemMorreu = false;
+        for (int t : tentativasPorJogador.values()) {
+            if (t <= 0) {
+                alguemMorreu = true;
+                break;
+            }
+        }
+
+        if (alguemMorreu) {
+            finalizado = true;
+            // Ganham os que ainda têm tentativas
+            for (Map.Entry<Integer, Integer> entry : tentativasPorJogador.entrySet()) {
+                if (entry.getValue() > 0) {
+                    vencedores.add(entry.getKey());
                 }
             }
+            // Se TODOS morreram, a lista de vencedores ficará vazia -> Derrota Total.
         }
     }
 

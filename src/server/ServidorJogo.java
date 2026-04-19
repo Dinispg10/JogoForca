@@ -69,6 +69,12 @@ public class ServidorJogo {
 
                     if (handlers.size() < MIN_JOGADORES) {
                         System.out.println("[Servidor] Jogadores insuficientes. A encerrar servidor.");
+                        // Notificar todos os clientes que o lobby timeout foi atingido
+                        for (GestorCliente handler : handlers) {
+                            handler.enviarMensagem(ProtocolMessages.lobbyTimeout());
+                        }
+                        // Dar tempo aos clientes de receberem a mensagem antes de encerrar
+                        Thread.sleep(500);
                         serverSocket.close();
                         return;
                     }

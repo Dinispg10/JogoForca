@@ -11,6 +11,7 @@ package comum;
  *   FIM_VITORIA;<ids_vencedores>;<palavra>;<motivo>
  *   FIM_PERDA;<palavra>;<motivo>
  *   CHEIO
+ *   LOBBY_TIMEOUT
  *
  * Protocolo Cliente → Servidor:
  *   jogada;<texto>
@@ -24,6 +25,7 @@ public class ProtocolMessages {
     public static final String FIM_VITORIA = "FIM_VITORIA";
     public static final String FIM_PERDA = "FIM_PERDA";
     public static final String CHEIO = "CHEIO";
+    public static final String LOBBY_TIMEOUT = "LOBBY_TIMEOUT";
     public static final String jogada = "jogada";
 
     public static String bemVindo(int idJogador, int totalJogadores) {
@@ -44,12 +46,16 @@ public class ProtocolMessages {
                 ((letrasUsadas == null || letrasUsadas.isBlank()) ? "-" : letrasUsadas);
     }
 
-    public static String fimVitoria(String idsVencedores, String palavra, String motivo) {
-        return FIM_VITORIA + ";" + idsVencedores + ";" + palavra + ";" + motivo;
+    public static String fimVitoria(String idsVencedores, String palavra) {
+        return FIM_VITORIA + ";" + idsVencedores + ";" + palavra;
     }
 
-    public static String fimPerda(String palavra, String motivo) {
-        return FIM_PERDA + ";" + palavra + ";" + motivo;
+    public static String fimPerda(String palavra) {
+        return FIM_PERDA + ";" + palavra;
+    }
+
+    public static String lobbyTimeout() {
+        return LOBBY_TIMEOUT;
     }
 
     public static String jogada(String texto) {
